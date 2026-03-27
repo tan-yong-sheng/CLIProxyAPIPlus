@@ -335,6 +335,7 @@ func validateModelsCatalog(data *staticModelsJSON) error {
 		{name: "codex-plus", models: data.CodexPlus},
 		{name: "codex-pro", models: data.CodexPro},
 		{name: "kimi", models: data.Kimi},
+		{name: "qoder", models: data.Qoder},
 		{name: "antigravity", models: data.Antigravity},
 		{name: "xai", models: data.XAI},
 	}

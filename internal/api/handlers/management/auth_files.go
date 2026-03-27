@@ -37,6 +37,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
+	qoderauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/qoder"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -2761,6 +2762,70 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 	}()
 
 	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})
+}
+
+func (h *Handler) RequestQoderToken(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	fmt.Println("Initializing Qoder authentication...")
+
+	state := fmt.Sprintf("qod-%d", time.Now().UnixNano())
+	qoderAuth := qoderauth.NewQoderAuth(h.cfg)
+
+	deviceFlow, err := qoderAuth.InitiateDeviceFlow(ctx)
+	if err != nil {
+		log.Errorf("Failed to generate authorization URL: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
+		return
+	}
+
+	RegisterOAuthSession(state, "qoder")
+
+	go func() {
+		fmt.Println("Waiting for authentication...")
+		tokenData, errPollForToken := qoderAuth.PollForToken(ctx, deviceFlow)
+		if errPollForToken != nil {
+			SetOAuthSessionError(state, "Authentication failed")
+			fmt.Printf("Authentication failed: %v\n", errPollForToken)
+			return
+		}
+
+		storage := qoderAuth.CreateTokenStorage(tokenData, deviceFlow.MachineID)
+		if strings.TrimSpace(storage.Email) == "" {
+			storage.Email = fmt.Sprintf("%d", time.Now().UnixMilli())
+		}
+		fileName := fmt.Sprintf("qoder-%s.json", storage.Email)
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "qoder",
+			FileName: fileName,
+			Label: func() string {
+				if storage.Name != "" {
+					return storage.Name
+				}
+				if storage.Email != "" {
+					return storage.Email
+				}
+				return "Qoder User"
+			}(),
+			Storage:  storage,
+			Metadata: map[string]any{"email": storage.Email},
+		}
+		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		if errSave != nil {
+			log.Errorf("Failed to save authentication tokens: %v", errSave)
+			SetOAuthSessionError(state, "Failed to save authentication tokens")
+			return
+		}
+
+		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
+		fmt.Println("You can now use Qoder services through this CLI")
+		CompleteOAuthSession(state)
+		CompleteOAuthSessionsByProvider("qoder")
+	}()
+
+	c.JSON(200, gin.H{"status": "ok", "url": deviceFlow.VerificationURIComplete, "state": state})
 }
 
 func (h *Handler) RequestKimiToken(c *gin.Context) {

@@ -1,13 +1,13 @@
 name: Upstream Sync
 
-# Pulls daily changes from router-for-me/CLIProxyAPI into this fork.
+# Polls for changes from router-for-me/CLIProxyAPI and merges them into this fork.
 # Plus-only provider dirs are shielded via .gitattributes (merge=ours).
 # If the merge is clean AND build passes, push directly to main.
 # Otherwise, open a PR for manual review.
 
 on:
   schedule:
-    - cron: '0 6 * * *'   # daily 06:00 UTC
+    - cron: '17 * * * *'   # hourly; GitHub does not emit cross-repo release events
   workflow_dispatch:
     inputs:
       force_pr:
@@ -125,16 +125,6 @@ jobs:
         with:
           go-version: '>=1.26.0'
           cache: true
-
-      - name: Refresh models catalog
-        if: steps.check.outputs.has_changes == 'true'
-        run: |
-          git fetch --depth 1 https://github.com/router-for-me/models.git main
-          git show FETCH_HEAD:models.json > internal/registry/models/models.json
-          if ! git diff --quiet -- internal/registry/models/models.json; then
-            git add internal/registry/models/models.json
-            git commit -m "chore(upstream-sync): refresh models catalog"
-          fi
 
       - name: Record synced upstream version
         if: steps.check.outputs.has_changes == 'true'

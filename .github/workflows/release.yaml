@@ -15,6 +15,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: goreleaser-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
@@ -23,10 +27,6 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ inputs.tag || github.ref }}
-      - name: Refresh models catalog
-        run: |
-          git fetch --depth 1 https://github.com/router-for-me/models.git main
-          git show FETCH_HEAD:models.json > internal/registry/models/models.json
       - run: git fetch --force --tags
       - uses: actions/setup-go@v4
         with:
@@ -42,7 +42,19 @@ jobs:
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           echo "COMMIT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
           echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+      - name: Check existing release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${VERSION}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "[i] ${VERSION} release already exists; skipping GoReleaser."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: goreleaser/goreleaser-action@v4
+        if: steps.release.outputs.exists != 'true'
         with:
           distribution: goreleaser
           version: latest

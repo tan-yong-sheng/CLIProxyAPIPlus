@@ -124,6 +124,11 @@ func newDefaultAuthManager() *sdkAuth.Manager {
 	)
 }
 
+func applyKiroRuntimeConfig(cfg *config.Config) {
+	kiroauth.InitRateLimiterConfig(cfg)
+	kiroauth.InitSystemPromptInjectConfig(cfg)
+}
+
 func (s *Service) ensureAuthUpdateQueue(ctx context.Context) {
 	if s == nil {
 		return
@@ -520,6 +525,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	s.applyRetryConfig(s.cfg)
+	applyKiroRuntimeConfig(s.cfg)
 
 	if s.coreManager != nil {
 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
@@ -700,6 +706,7 @@ func (s *Service) Run(ctx context.Context) error {
 		}
 
 		s.applyRetryConfig(newCfg)
+		applyKiroRuntimeConfig(newCfg)
 		s.applyPprofConfig(newCfg)
 		if s.server != nil {
 			s.server.UpdateClients(newCfg)
@@ -725,9 +732,8 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 	watcherWrapper.SetConfig(s.cfg)
 
-	// 方案 A: 连接 Kiro 后台刷新器回调到 Watcher
-	// 当后台刷新器成功刷新 token 后，立即通知 Watcher 更新内存中的 Auth 对象
-	// 这解决了后台刷新与内存 Auth 对象之间的时间差问题
+	// Connect the Kiro refresh callback to the watcher so in-memory auth state
+	// is updated immediately after background refresh succeeds.
 	kiroauth.GetRefreshManager().SetOnTokenRefreshed(func(tokenID string, tokenData *kiroauth.KiroTokenData) {
 		if tokenData == nil || watcherWrapper == nil {
 			return

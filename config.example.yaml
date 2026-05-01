@@ -253,7 +253,7 @@ nonstream-keepalive-interval: 0
 # Controls request throttling and backoff behavior for Kiro tokens.
 # All fields are optional; omitted fields fall back to defaults shown below.
 #kiro-rate-limit:
-#  enabled: true                # set to false to disable all rate limiting (default: true)
+#  enabled: true                # set to true to enable rate limiting (default: false)
 #  min-token-interval: "1s"     # minimum interval between requests per token (default: 1s)
 #  max-token-interval: "2s"     # maximum interval between requests per token (default: 2s)
 #  daily-max-requests: 500      # maximum requests per token per day (default: 500)
@@ -265,10 +265,9 @@ nonstream-keepalive-interval: 0
 
 # Controls whether system prompts are wrapped with --- SYSTEM PROMPT --- markers
 # and injected into Kiro user messages. Kiro/Amazon Q API has no native system
-# field, so by default the proxy prepends the system prompt (wrapped in markers)
-# to the user message. Set to false to drop system prompts entirely — useful
-# when the wrapped markers pollute downstream processing or get echoed back.
-# Default: true.
+# field, so when enabled the proxy prepends the wrapped system prompt to the
+# user message. By default the proxy drops system prompts entirely.
+# Default: false.
 #kiro-system-prompt-inject-enable: true
 
 # Kilocode (OAuth-based code assistant)

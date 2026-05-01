@@ -588,8 +588,8 @@ type KiroFingerprintConfig struct {
 // All duration fields accept Go duration strings (e.g., "1s", "30s", "5m").
 // Zero or negative values use defaults.
 type KiroRateLimitConfig struct {
-	// Enabled controls whether rate limiting is active (default: true).
-	// Set to false to disable all rate limiting for Kiro requests.
+	// Enabled controls whether rate limiting is active (default: false).
+	// Set to true to enable rate limiting for Kiro requests.
 	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	// MinTokenInterval is the minimum interval between requests (default: 1s).
 	MinTokenInterval string `yaml:"min-token-interval,omitempty" json:"min-token-interval,omitempty"`

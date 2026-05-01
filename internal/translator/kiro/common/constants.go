@@ -98,7 +98,7 @@ REMEMBER: When in doubt, write LESS per operation. Multiple small operations > o
 
 // systemPromptInjectEnabled controls whether system prompts are wrapped with
 // --- SYSTEM PROMPT --- markers and injected into Kiro user messages.
-// Default: 1 (enabled). Set to 0 to completely drop system prompts.
+// Default: 0 (disabled). Set to 1 to inject wrapped system prompts.
 var systemPromptInjectEnabled atomic.Int32
 
 func init() {

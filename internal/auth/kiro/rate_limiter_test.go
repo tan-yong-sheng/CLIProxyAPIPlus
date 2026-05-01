@@ -6,6 +6,11 @@ import (
 	"time"
 )
 
+func enabledRateLimiter() *RateLimiter {
+	enabled := true
+	return NewRateLimiterWithConfig(RateLimiterConfig{Enabled: &enabled})
+}
+
 func TestNewRateLimiter(t *testing.T) {
 	rl := NewRateLimiter()
 	if rl == nil {
@@ -23,10 +28,15 @@ func TestNewRateLimiter(t *testing.T) {
 	if rl.dailyMaxRequests != DefaultDailyMaxRequests {
 		t.Errorf("expected dailyMaxRequests %d, got %d", DefaultDailyMaxRequests, rl.dailyMaxRequests)
 	}
+	if rl.enabled {
+		t.Error("expected rate limiter to be disabled by default")
+	}
 }
 
 func TestNewRateLimiterWithConfig(t *testing.T) {
+	enabled := true
 	cfg := RateLimiterConfig{
+		Enabled:           &enabled,
 		MinTokenInterval:  5 * time.Second,
 		MaxTokenInterval:  15 * time.Second,
 		DailyMaxRequests:  100,
@@ -47,10 +57,15 @@ func TestNewRateLimiterWithConfig(t *testing.T) {
 	if rl.dailyMaxRequests != 100 {
 		t.Errorf("expected dailyMaxRequests 100, got %d", rl.dailyMaxRequests)
 	}
+	if !rl.enabled {
+		t.Error("expected rate limiter to be enabled by config")
+	}
 }
 
 func TestNewRateLimiterWithConfig_PartialConfig(t *testing.T) {
+	enabled := true
 	cfg := RateLimiterConfig{
+		Enabled:          &enabled,
 		MinTokenInterval: 5 * time.Second,
 	}
 
@@ -58,8 +73,8 @@ func TestNewRateLimiterWithConfig_PartialConfig(t *testing.T) {
 	if rl.minTokenInterval != 5*time.Second {
 		t.Errorf("expected minTokenInterval 5s, got %v", rl.minTokenInterval)
 	}
-	if rl.maxTokenInterval != DefaultMaxTokenInterval {
-		t.Errorf("expected default maxTokenInterval, got %v", rl.maxTokenInterval)
+	if rl.maxTokenInterval != 6*time.Second {
+		t.Errorf("expected maxTokenInterval to clamp to 6s, got %v", rl.maxTokenInterval)
 	}
 }
 
@@ -79,7 +94,7 @@ func TestIsTokenAvailable_NewToken(t *testing.T) {
 }
 
 func TestMarkTokenFailed(t *testing.T) {
-	rl := NewRateLimiter()
+	rl := enabledRateLimiter()
 	rl.MarkTokenFailed("token1")
 
 	state := rl.GetTokenState("token1")
@@ -95,7 +110,7 @@ func TestMarkTokenFailed(t *testing.T) {
 }
 
 func TestMarkTokenSuccess(t *testing.T) {
-	rl := NewRateLimiter()
+	rl := enabledRateLimiter()
 	rl.MarkTokenFailed("token1")
 	rl.MarkTokenFailed("token1")
 	rl.MarkTokenSuccess("token1")
@@ -113,7 +128,7 @@ func TestMarkTokenSuccess(t *testing.T) {
 }
 
 func TestCheckAndMarkSuspended_Suspended(t *testing.T) {
-	rl := NewRateLimiter()
+	rl := enabledRateLimiter()
 
 	testCases := []string{
 		"Account has been suspended",
@@ -138,7 +153,7 @@ func TestCheckAndMarkSuspended_Suspended(t *testing.T) {
 }
 
 func TestCheckAndMarkSuspended_NotSuspended(t *testing.T) {
-	rl := NewRateLimiter()
+	rl := enabledRateLimiter()
 
 	normalErrors := []string{
 		"connection timeout",
@@ -156,7 +171,7 @@ func TestCheckAndMarkSuspended_NotSuspended(t *testing.T) {
 }
 
 func TestIsTokenAvailable_Suspended(t *testing.T) {
-	rl := NewRateLimiter()
+	rl := enabledRateLimiter()
 	rl.CheckAndMarkSuspended("token1", "Account suspended")
 
 	if rl.IsTokenAvailable("token1") {
@@ -165,7 +180,7 @@ func TestIsTokenAvailable_Suspended(t *testing.T) {
 }
 
 func TestClearTokenState(t *testing.T) {
-	rl := NewRateLimiter()
+	rl := enabledRateLimiter()
 	rl.MarkTokenFailed("token1")
 	rl.ClearTokenState("token1")
 
@@ -176,7 +191,7 @@ func TestClearTokenState(t *testing.T) {
 }
 
 func TestResetSuspension(t *testing.T) {
-	rl := NewRateLimiter()
+	rl := enabledRateLimiter()
 	rl.CheckAndMarkSuspended("token1", "Account suspended")
 	rl.ResetSuspension("token1")
 
@@ -238,7 +253,7 @@ func TestCalculateBackoff_MaxCap(t *testing.T) {
 }
 
 func TestGetTokenState_ReturnsCopy(t *testing.T) {
-	rl := NewRateLimiter()
+	rl := enabledRateLimiter()
 	rl.MarkTokenFailed("token1")
 
 	state1 := rl.GetTokenState("token1")
@@ -251,7 +266,7 @@ func TestGetTokenState_ReturnsCopy(t *testing.T) {
 }
 
 func TestRateLimiter_ConcurrentAccess(t *testing.T) {
-	rl := NewRateLimiter()
+	rl := enabledRateLimiter()
 	const numGoroutines = 50
 	const numOperations = 50
 

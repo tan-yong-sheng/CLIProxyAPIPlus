@@ -200,11 +200,12 @@ func InitFingerprintConfig(cfg *config.Config) {
 // --- SYSTEM PROMPT --- markers and inject them into user messages.
 // When nil or false (default), system prompts are dropped entirely.
 func InitSystemPromptInjectConfig(cfg *config.Config) {
-	if cfg == nil || cfg.KiroSystemPromptInjectEnable == nil {
-		return
+	enabled := false
+	if cfg != nil && cfg.KiroSystemPromptInjectEnable != nil {
+		enabled = *cfg.KiroSystemPromptInjectEnable
 	}
-	kirocommon.SetSystemPromptInjectEnabled(*cfg.KiroSystemPromptInjectEnable)
-	if *cfg.KiroSystemPromptInjectEnable {
+	kirocommon.SetSystemPromptInjectEnabled(enabled)
+	if enabled {
 		log.Info("kiro: system prompt injection enabled")
 	} else {
 		log.Info("kiro: system prompt injection disabled (default) — system prompts will be dropped")
@@ -215,6 +216,7 @@ func InitSystemPromptInjectConfig(cfg *config.Config) {
 // Must be called before any Kiro requests are made for the config to take effect.
 func InitRateLimiterConfig(cfg *config.Config) {
 	if cfg == nil || cfg.KiroRateLimit == nil {
+		SetGlobalRateLimiterConfig(nil)
 		return
 	}
 

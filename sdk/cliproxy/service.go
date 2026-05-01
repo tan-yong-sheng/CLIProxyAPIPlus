@@ -17,6 +17,7 @@ import (
 	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
+	kirocommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/common"
 	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/wsrelay"
@@ -978,7 +979,9 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		models = s.fetchKiroModels(a)
 		// Filter out agentic variants when system prompt injection is disabled,
 		// since the agentic prompt is delivered via system prompt injection.
-		if s.cfg.KiroSystemPromptInjectEnable == nil || !*s.cfg.KiroSystemPromptInjectEnable {
+		// Use the runtime global flag (not config field) to stay consistent
+		// with the translator's actual behavior.
+		if !kirocommon.IsSystemPromptInjectEnabled() {
 			models = filterAgenticVariants(models)
 		}
 		models = applyExcludedModels(models, excluded)

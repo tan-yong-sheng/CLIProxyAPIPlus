@@ -421,3 +421,51 @@ func TestEndpointAliases(t *testing.T) {
 		t.Errorf("unexpected number of aliases: got %d, want %d", len(endpointAliases), len(expectedAliases))
 	}
 }
+
+func TestMapModelToKiro_MapsClaudeOpus47Variants(t *testing.T) {
+	executor := &KiroExecutor{}
+	tests := []struct {
+		name     string
+		model    string
+		expected string
+	}{
+		{
+			name:     "kiro alias",
+			model:    "kiro-claude-opus-4-7",
+			expected: "claude-opus-4.7",
+		},
+		{
+			name:     "kiro agentic alias",
+			model:    "kiro-claude-opus-4-7-agentic",
+			expected: "claude-opus-4.7",
+		},
+		{
+			name:     "native hyphen alias",
+			model:    "claude-opus-4-7",
+			expected: "claude-opus-4.7",
+		},
+		{
+			name:     "native dotted alias",
+			model:    "claude-opus-4.7",
+			expected: "claude-opus-4.7",
+		},
+		{
+			name:     "native agentic alias",
+			model:    "claude-opus-4.7-agentic",
+			expected: "claude-opus-4.7",
+		},
+		{
+			name:     "unknown opus 4.7 fallback",
+			model:    "partner-opus-4.7-preview",
+			expected: "claude-opus-4.7",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := executor.mapModelToKiro(tt.model); got != tt.expected {
+				t.Fatalf("mapModelToKiro(%q) = %q, want %q", tt.model, got, tt.expected)
+			}
+		})
+	}
+}

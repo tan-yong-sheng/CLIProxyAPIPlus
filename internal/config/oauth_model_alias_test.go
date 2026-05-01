@@ -82,6 +82,7 @@ func TestSanitizeOAuthModelAlias_InjectsDefaultKiroAliases(t *testing.T) {
 		"claude-sonnet-4-5",
 		"claude-sonnet-4-20250514",
 		"claude-sonnet-4",
+		"claude-opus-4-7",
 		"claude-opus-4-6",
 		"claude-opus-4-5-20251101",
 		"claude-opus-4-5",

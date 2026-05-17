@@ -101,32 +101,18 @@ func NewQoderAuth(cfg *config.Config) *QoderAuth {
 	}
 }
 
-// generateCodeVerifier generates a cryptographically random string for PKCE
-func generateCodeVerifier() (string, error) {
-	return generateDeviceCodeVerifier()
-}
-
-// generateCodeChallenge creates a SHA-256 hash of the code verifier
-func generateCodeChallenge(codeVerifier string) string {
-	return generateDeviceCodeChallenge(codeVerifier)
-}
-
-// InitiateDeviceFlow starts the OAuth 2.0 device authorization flow
-// Qoder uses a simplified flow: generate PKCE locally and construct login URL
+// InitiateDeviceFlow starts the OAuth 2.0 device authorization flow.
+// Qoder uses a simplified flow: generate PKCE locally and construct the login URL.
 func (qa *QoderAuth) InitiateDeviceFlow(ctx context.Context) (*DeviceFlowResponse, error) {
-	// Generate PKCE code verifier and challenge
-	codeVerifier, err := generateCodeVerifier()
+	codeVerifier, codeChallenge, err := generateDevicePKCEPair()
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate code verifier: %w", err)
+		return nil, fmt.Errorf("failed to generate PKCE pair: %w", err)
 	}
-	codeChallenge := generateCodeChallenge(codeVerifier)
 
-	// Generate nonce and machine ID
 	nonce := uuid.New().String()
 	machineID := generateMachineID()
 
-	// Build login URL (matching Python implementation)
-	loginURL := fmt.Sprintf(
+	verificationURI := fmt.Sprintf(
 		"%s?challenge=%s&challenge_method=S256&machine_id=%s&nonce=%s",
 		QoderLoginURL,
 		codeChallenge,
@@ -134,39 +120,25 @@ func (qa *QoderAuth) InitiateDeviceFlow(ctx context.Context) (*DeviceFlowRespons
 		nonce,
 	)
 
-	// Store verifier in URL for later retrieval during polling
-	verificationURIComplete := fmt.Sprintf("%s&verifier=%s", loginURL, codeVerifier)
-
 	return &DeviceFlowResponse{
-		VerificationURIComplete: verificationURIComplete,
+		VerificationURIComplete: verificationURI,
 		CodeVerifier:            codeVerifier,
 		Nonce:                   nonce,
 		MachineID:               machineID,
 	}, nil
 }
 
-// PollForToken polls the token endpoint with the device code to obtain an access token
+// PollForToken polls the token endpoint with the device code to obtain an access token.
 func (qa *QoderAuth) PollForToken(ctx context.Context, deviceFlow *DeviceFlowResponse) (*QoderTokenData, error) {
-	// Extract code verifier from the URL
-	parsed, err := url.Parse(deviceFlow.VerificationURIComplete)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse verification URI: %w", err)
-	}
-	verifier := parsed.Query().Get("verifier")
-	if verifier == "" {
-		return nil, fmt.Errorf("code verifier not found")
-	}
-
-	nonce := parsed.Query().Get("nonce")
-	if nonce == "" {
-		nonce = deviceFlow.Nonce
+	if deviceFlow == nil || deviceFlow.CodeVerifier == "" || deviceFlow.Nonce == "" {
+		return nil, fmt.Errorf("device flow is missing code verifier or nonce")
 	}
 
 	pollURL := fmt.Sprintf(
 		"%s?nonce=%s&verifier=%s&challenge_method=S256",
 		QoderOAuthTokenEndpoint,
-		nonce,
-		verifier,
+		url.QueryEscape(deviceFlow.Nonce),
+		url.QueryEscape(deviceFlow.CodeVerifier),
 	)
 
 	pollInterval := 2 * time.Second

@@ -74,18 +74,13 @@ func (a *QoderAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
 		return nil, fmt.Errorf("qoder authentication failed: %w", err)
 	}
 
-	// Fetch user info (best effort)
-	name, email, err := authSvc.FetchUserInfo(ctx, tokenData.AccessToken)
-	if err != nil {
-		log.Warnf("Failed to fetch user info: %v", err)
-	}
-
-	// Create token storage
+	// Create token storage and resolve user info (best effort).
+	// SaveUserInfo internally fetches via /userinfo if name or email are empty,
+	// so we don't need a separate FetchUserInfo call ahead of it.
 	tokenStorage := authSvc.CreateTokenStorage(tokenData, deviceFlow.MachineID)
+	var name, email string
 	if tokenData.UserID != "" {
-		updatedName, updatedEmail := authSvc.SaveUserInfo(ctx, tokenData.AccessToken, tokenData.UserID, name, email)
-		name = updatedName
-		email = updatedEmail
+		name, email = authSvc.SaveUserInfo(ctx, tokenData.AccessToken, tokenData.UserID, "", "")
 	}
 
 	// Get email from options if not fetched

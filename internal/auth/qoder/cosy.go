@@ -14,8 +14,11 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -59,7 +62,23 @@ type CosyHeaders struct {
 	XVersion      string
 }
 
-// parseRSAPublicKey parses the PEM-encoded RSA public key
+// Apply writes the COSY headers onto an HTTP request. Caller is responsible for
+// setting Content-Type and any non-auth headers (Accept, etc.).
+func (h *CosyHeaders) Apply(req *http.Request) {
+	if h == nil || req == nil {
+		return
+	}
+	req.Header.Set("Authorization", h.Authorization)
+	req.Header.Set("Cosy-Key", h.CosyKey)
+	req.Header.Set("Cosy-User", h.CosyUser)
+	req.Header.Set("Cosy-Date", h.CosyDate)
+	req.Header.Set("X-Request-Id", h.XRequestID)
+	req.Header.Set("X-Machine-OS", h.XMachineOS)
+	req.Header.Set("X-IDE-Platform", h.XIDEPlatform)
+	req.Header.Set("X-Version", h.XVersion)
+}
+
+// parseRSAPublicKey parses the PEM-encoded RSA public key.
 func parseRSAPublicKey(pemString string) (*rsa.PublicKey, error) {
 	block, _ := pem.Decode([]byte(pemString))
 	if block == nil {
@@ -74,6 +93,22 @@ func parseRSAPublicKey(pemString string) (*rsa.PublicKey, error) {
 		return nil, fmt.Errorf("not an RSA public key")
 	}
 	return pubKey, nil
+}
+
+// cosyPublicKey lazily parses qoderRSAPublicKey once and caches the result.
+// The PEM bytes are a compile-time constant so the parse is deterministic;
+// caching avoids repeating PEM decode + ASN.1 parse on every signed request.
+var (
+	cosyPublicKeyOnce sync.Once
+	cosyPublicKey     *rsa.PublicKey
+	cosyPublicKeyErr  error
+)
+
+func getCosyPublicKey() (*rsa.PublicKey, error) {
+	cosyPublicKeyOnce.Do(func() {
+		cosyPublicKey, cosyPublicKeyErr = parseRSAPublicKey(qoderRSAPublicKey)
+	})
+	return cosyPublicKey, cosyPublicKeyErr
 }
 
 // generateAESKey generates a random 16-character AES key (UUID hex prefix)
@@ -127,7 +162,7 @@ func encryptUserInfo(userInfo *UserInfo) (string, string, error) {
 	infoB64 := base64.StdEncoding.EncodeToString(ciphertext)
 
 	// RSA-PKCS1-v1.5 encrypt the AES key
-	pubKey, err := parseRSAPublicKey(qoderRSAPublicKey)
+	pubKey, err := getCosyPublicKey()
 	if err != nil {
 		return "", "", err
 	}
@@ -163,16 +198,38 @@ func bytesRepeat(b byte, count int) []byte {
 	return result
 }
 
-// buildAuthHeaders builds COSY v0.9 auth headers for one request
-// Algorithm from sharedProcessMain.js: encryptUserInfo + generateAuthToken
-func BuildAuthHeaders(body []byte, requestURL string, userID, authToken, name, email, cliVersion, machineOS string) (*CosyHeaders, error) {
+// CosyCredentials holds the per-account inputs needed to sign a COSY request.
+// Build it once per call from the live token storage and pass it into
+// BuildAuthHeaders.
+type CosyCredentials struct {
+	UserID    string
+	AuthToken string
+	Name      string
+	Email     string
+}
+
+// FromStorage populates CosyCredentials from the persisted QoderTokenStorage.
+func (c *CosyCredentials) FromStorage(s *QoderTokenStorage) {
+	if c == nil || s == nil {
+		return
+	}
+	c.UserID = s.UserID
+	c.AuthToken = s.Token
+	c.Name = s.Name
+	c.Email = s.Email
+}
+
+// BuildAuthHeaders builds COSY v0.9 auth headers for a single signed request.
+// Algorithm originates from sharedProcessMain.js (encryptUserInfo + generateAuthToken).
+// CLI version and machine OS are read from the package constants.
+func BuildAuthHeaders(body []byte, requestURL string, creds CosyCredentials) (*CosyHeaders, error) {
 	// Build user info
 	userInfo := &UserInfo{
-		UID:                userID,
-		SecurityOAuthToken: authToken,
-		Name:               name,
+		UID:                creds.UserID,
+		SecurityOAuthToken: creds.AuthToken,
+		Name:               creds.Name,
 		AID:                "",
-		Email:              email,
+		Email:              creds.Email,
 	}
 
 	// Encrypt user info
@@ -190,7 +247,7 @@ func BuildAuthHeaders(body []byte, requestURL string, userID, authToken, name, e
 		Version:     "v1",
 		RequestID:   requestID,
 		Info:        infoB64,
-		CosyVersion: cliVersion,
+		CosyVersion: QoderCLIVersion,
 		IdeVersion:  "",
 	}
 
@@ -219,12 +276,12 @@ func BuildAuthHeaders(body []byte, requestURL string, userID, authToken, name, e
 	return &CosyHeaders{
 		Authorization: fmt.Sprintf("Bearer COSY.%s.%s", payloadB64, sig),
 		CosyKey:       cosyKeyB64,
-		CosyUser:      userID,
+		CosyUser:      creds.UserID,
 		CosyDate:      timestamp,
 		XRequestID:    requestID,
-		XMachineOS:    machineOS,
+		XMachineOS:    QoderMachineOS,
 		XIDEPlatform:  "cli",
-		XVersion:      cliVersion,
+		XVersion:      QoderCLIVersion,
 	}, nil
 }
 
@@ -263,18 +320,18 @@ func formatExpiresAt(expireMs int64) string {
 	return time.Unix(0, expireMs*int64(time.Millisecond)).Format(time.RFC3339)
 }
 
-// parseExpiresAt parses RFC3339 or milliseconds to int64 milliseconds
+// parseExpiresAt parses an RFC3339 timestamp or a Unix-millisecond integer string
+// into Unix milliseconds. Falls back to "now + 30 days" if the input is unparseable.
 func parseExpiresAt(s string) int64 {
-	// Try parsing as RFC3339
+	s = strings.TrimSpace(s)
+
 	if t, err := time.Parse(time.RFC3339, s); err == nil {
 		return t.UnixMilli()
 	}
 
-	// Try parsing as Unix milliseconds
-	if ms, err := time.Parse("2006-01-02T15:04:05.999Z07:00", s); err == nil {
-		return ms.UnixMilli()
+	if ms, err := strconv.ParseInt(s, 10, 64); err == nil && ms > 0 {
+		return ms
 	}
 
-	// Default to current time + 30 days
 	return time.Now().Add(30 * 24 * time.Hour).UnixMilli()
 }

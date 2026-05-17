@@ -33,7 +33,8 @@ func TestInitiateDeviceFlow(t *testing.T) {
 	require.NotEmpty(t, resp.MachineID)
 	assert.Contains(t, resp.VerificationURIComplete, QoderLoginURL)
 	assert.Contains(t, resp.VerificationURIComplete, "challenge=")
-	assert.Contains(t, resp.VerificationURIComplete, "verifier=")
+	assert.NotContains(t, resp.VerificationURIComplete, "verifier=",
+		"verifier must not leak into the user-visible URL")
 }
 
 // TestPollForToken_Success tests successful token polling

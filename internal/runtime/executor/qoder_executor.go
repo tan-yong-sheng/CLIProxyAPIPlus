@@ -168,12 +168,12 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 	headers, err := qoderauth.BuildAuthHeaders(
 		bodyBytes,
 		qoderauth.QoderChatURL,
-		storage.UserID,
-		storage.Token,
-		storage.Name,
-		storage.Email,
-		qoderauth.QoderCLIVersion,
-		qoderauth.QoderMachineOS,
+		qoderauth.CosyCredentials{
+			UserID:    storage.UserID,
+			AuthToken: storage.Token,
+			Name:      storage.Name,
+			Email:     storage.Email,
+		},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build COSY auth: %w", err)
@@ -187,14 +187,7 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 
 	// Set headers
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", headers.Authorization)
-	httpReq.Header.Set("Cosy-Key", headers.CosyKey)
-	httpReq.Header.Set("Cosy-User", headers.CosyUser)
-	httpReq.Header.Set("Cosy-Date", headers.CosyDate)
-	httpReq.Header.Set("X-Request-Id", headers.XRequestID)
-	httpReq.Header.Set("X-Machine-OS", headers.XMachineOS)
-	httpReq.Header.Set("X-IDE-Platform", headers.XIDEPlatform)
-	httpReq.Header.Set("X-Version", headers.XVersion)
+	headers.Apply(httpReq)
 	httpReq.Header.Set("Accept", "text/event-stream")
 
 	// Send request
@@ -467,46 +460,6 @@ func buildOpenAIChunk(inner map[string]interface{}, model string) ([]byte, error
 	return json.Marshal(inner)
 }
 
-// convertToOpenAIChunk converts Qoder response chunk to OpenAI format
-func convertToOpenAIChunk(qoderChunk map[string]interface{}, model string) map[string]interface{} {
-	choices, _ := qoderChunk["choices"].([]interface{})
-	if len(choices) == 0 {
-		return map[string]interface{}{
-			"id":      fmt.Sprintf("qoder-%d", time.Now().UnixNano()),
-			"object":  "chat.completion.chunk",
-			"created": time.Now().Unix(),
-			"model":   model,
-			"choices": []map[string]interface{}{{"index": 0, "delta": map[string]interface{}{}, "finish_reason": "stop"}},
-		}
-	}
-
-	choice, _ := choices[0].(map[string]interface{})
-	delta, _ := choice["delta"].(map[string]interface{})
-	finishReasonRaw, _ := choice["finish_reason"].(interface{})
-
-	var finishReason *string
-	if finishReasonRaw != nil {
-		fr := fmt.Sprintf("%v", finishReasonRaw)
-		finishReason = &fr
-	}
-
-	return map[string]interface{}{
-		"id":      fmt.Sprintf("qoder-%d", time.Now().UnixNano()),
-		"object":  "chat.completion.chunk",
-		"created": time.Now().Unix(),
-		"model":   model,
-		"choices": []map[string]interface{}{
-			{
-				"index": 0,
-				"delta": map[string]interface{}{
-					"content": delta["content"],
-				},
-				"finish_reason": finishReason,
-			},
-		},
-	}
-}
-
 // qoderStatusError implements StatusError for Qoder API errors
 type qoderStatusError struct {
 	status  int
@@ -736,12 +689,12 @@ func (e *QoderExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
 	headers, err := qoderauth.BuildAuthHeaders(
 		bodyBytes,
 		req.URL.String(),
-		storage.UserID,
-		storage.Token,
-		storage.Name,
-		storage.Email,
-		qoderauth.QoderCLIVersion,
-		qoderauth.QoderMachineOS,
+		qoderauth.CosyCredentials{
+			UserID:    storage.UserID,
+			AuthToken: storage.Token,
+			Name:      storage.Name,
+			Email:     storage.Email,
+		},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build COSY auth: %w", err)
@@ -749,14 +702,7 @@ func (e *QoderExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
 
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", headers.Authorization)
-	req.Header.Set("Cosy-Key", headers.CosyKey)
-	req.Header.Set("Cosy-User", headers.CosyUser)
-	req.Header.Set("Cosy-Date", headers.CosyDate)
-	req.Header.Set("X-Request-Id", headers.XRequestID)
-	req.Header.Set("X-Machine-OS", headers.XMachineOS)
-	req.Header.Set("X-IDE-Platform", headers.XIDEPlatform)
-	req.Header.Set("X-Version", headers.XVersion)
+	headers.Apply(req)
 
 	// Execute request
 	req = req.WithContext(ctx)

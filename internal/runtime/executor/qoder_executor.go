@@ -130,27 +130,7 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 			"max_new_tokens": 16384,
 			"max_tokens":     16384,
 		},
-		"model_config": map[string]interface{}{
-			"key":                   qoderModel,
-			"display_name":          qoderModel,
-			"model":                 "",
-			"format":                "openai",
-			"is_vl":                 true,
-			"is_reasoning":          false,
-			"api_key":               "",
-			"url":                   "",
-			"source":                "system",
-			"max_input_tokens":      180000,
-			"enable":                false,
-			"price_factor":          0,
-			"original_price_factor": 0,
-			"is_default":            false,
-			"is_new":                false,
-			"exclude_tags":          nil,
-			"tags":                  nil,
-			"icon":                  nil,
-			"strategies":            nil,
-		},
+		"model_config":     buildQoderModelConfig(storage, qoderModel),
 		"messages": func() []interface{} {
 			if useNormalized {
 				return normalized
@@ -792,6 +772,41 @@ func (e *QoderExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
 	return httpClient.Do(req)
 }
 
+// buildQoderModelConfig assembles the model_config block for a chat request.
+// Prefers the raw upstream entry cached on the storage by FetchQoderModels
+// (so per-model is_vl / is_reasoning / max_input_tokens / price_factor
+// match what /algo/api/v2/model/list published). Falls back to a minimal
+// hand-built block when the cache is empty (first request before any model
+// list fetch, or in the rare static-fallback path).
+func buildQoderModelConfig(storage *qoderauth.QoderTokenStorage, modelKey string) map[string]interface{} {
+	if storage != nil && len(storage.ModelConfigs) > 0 {
+		if raw, ok := storage.ModelConfigs[modelKey]; ok && len(raw) > 0 {
+			var cfg map[string]interface{}
+			if err := json.Unmarshal(raw, &cfg); err == nil && cfg != nil {
+				// The cache stores the model description; ensure the key
+				// matches what we actually want to send (handles aliasing).
+				cfg["key"] = modelKey
+				return cfg
+			}
+		}
+	}
+	// Generic fallback. The values match what /v1 model_list publishes
+	// for a typical tier model and are accepted by the server even when
+	// some per-model fields are wrong (server reads these as hints).
+	return map[string]interface{}{
+		"key":              modelKey,
+		"display_name":     modelKey,
+		"model":            "",
+		"format":           "openai",
+		"is_vl":            true,
+		"is_reasoning":     false,
+		"api_key":          "",
+		"url":              "",
+		"source":           "system",
+		"max_input_tokens": 180000,
+	}
+}
+
 // FetchQoderModels retrieves the live model list from Qoder's
 // /algo/api/v2/model/list endpoint and converts it into ModelInfo entries.
 // Falls back to the static registry if the auth lacks credentials, the request
@@ -858,6 +873,7 @@ func FetchQoderModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 
 	now := time.Now().Unix()
 	models := make([]*registry.ModelInfo, 0, 16)
+	configs := make(map[string]json.RawMessage, 16)
 	chat.ForEach(func(_, entry gjson.Result) bool {
 		key := entry.Get("key").String()
 		if key == "" {
@@ -873,6 +889,11 @@ func FetchQoderModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 		ctxLen := int(entry.Get("max_input_tokens").Int())
 		isReasoning := entry.Get("is_reasoning").Bool()
 		isVL := entry.Get("is_vl").Bool()
+
+		// Cache the raw upstream JSON for this model so ExecuteStream can
+		// forward the exact model_config the server published (per-model
+		// is_vl / is_reasoning / max_input_tokens / price_factor / ...).
+		configs[key] = json.RawMessage(entry.Raw)
 
 		mi := &registry.ModelInfo{
 			ID:            key,
@@ -897,6 +918,13 @@ func FetchQoderModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 	if len(models) == 0 {
 		log.Warn("qoder: model list returned no enabled models, falling back to static")
 		return registry.GetQoderModels()
+	}
+
+	// Persist the cached configs onto the auth's storage so subsequent
+	// ExecuteStream calls can read them. We don't write the file here —
+	// the framework's persist hook will pick this up on the next save.
+	if storage, ok := auth.Storage.(*qoderauth.QoderTokenStorage); ok && storage != nil {
+		storage.ModelConfigs = configs
 	}
 
 	log.Infof("qoder: fetched %d models from /algo/api/v2/model/list", len(models))

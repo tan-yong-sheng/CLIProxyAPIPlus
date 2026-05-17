@@ -36,6 +36,14 @@ type QoderTokenStorage struct {
 	MachineToken string `json:"machine_token,omitempty"`
 	// MachineType is the type of machine registration.
 	MachineType string `json:"machine_type,omitempty"`
+	// ModelConfigs caches the raw upstream model_config entries from the most
+	// recent /algo/api/v2/model/list response, keyed by model id (e.g.
+	// "dfmodel" -> {"key":"dfmodel","format":"openai","is_vl":true,
+	// "is_reasoning":true,"max_input_tokens":180000,...}). The executor
+	// passes the cached entry through to chat requests so per-model fields
+	// (is_vl, is_reasoning, max_input_tokens, price_factor, ...) match what
+	// the server published rather than a hard-coded average.
+	ModelConfigs map[string]json.RawMessage `json:"model_configs,omitempty"`
 
 	// Metadata holds arbitrary key-value pairs injected via hooks.
 	// It is not exported to JSON directly to allow flattening during serialization.

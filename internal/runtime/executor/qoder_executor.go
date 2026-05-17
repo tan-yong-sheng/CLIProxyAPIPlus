@@ -203,6 +203,12 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 		defer close(out)
 		defer func() { _ = httpResp.Body.Close() }()
 
+		// streamParam threads stateful translator data (e.g. whether
+		// message_start / content_block_start has been emitted yet) across
+		// every chunk in this stream. Re-creating it per chunk caused the
+		// translator to re-emit the opening events for every delta.
+		var streamParam any
+
 		var debugFile *os.File
 		if debugPath := strings.TrimSpace(os.Getenv("QODER_DEBUG_SSE")); debugPath != "" {
 			if f, err := os.OpenFile(debugPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
@@ -231,7 +237,7 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 			data := bytes.TrimPrefix(line, []byte("data:"))
 			data = bytes.TrimPrefix(data, []byte(" "))
 			if bytes.Equal(data, []byte("[DONE]")) {
-				emitDone(ctx, out, opts.SourceFormat, req.Model, opts.OriginalRequest, payload)
+				emitDone(ctx, out, opts.SourceFormat, req.Model, opts.OriginalRequest, payload, &streamParam)
 				return
 			}
 			if debugFile != nil {
@@ -265,7 +271,7 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 				continue
 			}
 			if innerStr == "[DONE]" {
-				emitDone(ctx, out, opts.SourceFormat, req.Model, opts.OriginalRequest, payload)
+				emitDone(ctx, out, opts.SourceFormat, req.Model, opts.OriginalRequest, payload, &streamParam)
 				return
 			}
 			var inner map[string]interface{}
@@ -297,9 +303,8 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 			if from == "" {
 				from = to
 			}
-			var param any
 			frames := sdktranslator.TranslateStream(ctx, to, from,
-				req.Model, opts.OriginalRequest, payload, ssePayload, &param)
+				req.Model, opts.OriginalRequest, payload, ssePayload, &streamParam)
 			for _, frame := range frames {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: frame}:
@@ -311,7 +316,7 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 		// Scanner loop exited naturally (EOF). Emit a terminating
 		// "data: [DONE]" / Anthropic message_stop frame so the client
 		// closes the stream cleanly.
-		emitDone(ctx, out, opts.SourceFormat, req.Model, opts.OriginalRequest, payload)
+		emitDone(ctx, out, opts.SourceFormat, req.Model, opts.OriginalRequest, payload, &streamParam)
 		// Check for scanner errors
 		if err := scanner.Err(); err != nil {
 			out <- cliproxyexecutor.StreamChunk{Err: fmt.Errorf("scanner error: %w", err)}
@@ -506,16 +511,19 @@ func buildOpenAIChunk(inner map[string]interface{}, model string) ([]byte, error
 // for OpenAI, "event: message_stop\ndata: {...}\n\n" for Anthropic, and
 // the equivalent format-specific terminators for Gemini etc. This mirrors
 // the pattern used by kimi_executor.
+//
+// param must be the same pointer the per-chunk TranslateStream calls used
+// — the Anthropic translator (and others) need the carried state to know
+// which content_block indices to close, the running token count, etc.
 func emitDone(ctx context.Context, out chan<- cliproxyexecutor.StreamChunk,
-	sourceFormat sdktranslator.Format, reqModel string, originalReq, body []byte) {
+	sourceFormat sdktranslator.Format, reqModel string, originalReq, body []byte, param *any) {
 	to := sdktranslator.FormatOpenAI
 	from := sourceFormat
 	if from == "" {
 		from = to
 	}
-	var param any
 	frames := sdktranslator.TranslateStream(ctx, to, from,
-		reqModel, originalReq, body, []byte("[DONE]"), &param)
+		reqModel, originalReq, body, []byte("[DONE]"), param)
 	for _, frame := range frames {
 		select {
 		case out <- cliproxyexecutor.StreamChunk{Payload: frame}:

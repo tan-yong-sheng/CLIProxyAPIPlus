@@ -80,11 +80,12 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 		qoderModel = mapped
 	}
 
-	// Convert messages to prompt format and normalize tool history
+	// Normalize messages: flatten Anthropic/OpenAI multipart content arrays
+	// to plain strings (Qoder's chat endpoint expects content to be a string),
+	// and rewrite tool / assistant-with-tool-calls turns into pseudo-text.
 	messagesRaw, _ := chatReq["messages"].([]interface{})
 	toolsRaw := chatReq["tools"]
 	normalized := normalizeQoderMessages(messagesRaw)
-	useNormalized := hasToolHistory(messagesRaw)
 	prompt := messagesToPromptGeneric(normalized, toolsRaw)
 
 	requestID := uuid.New().String()
@@ -140,12 +141,7 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 			"max_tokens":     16384,
 		},
 		"model_config":     modelConfig,
-		"messages": func() []interface{} {
-			if useNormalized {
-				return normalized
-			}
-			return messagesRaw
-		}(),
+		"messages":         normalized,
 	}
 	if toolsRaw != nil {
 		reqBody["tools"] = toolsRaw
@@ -441,9 +437,19 @@ func normalizeQoderMessages(messages []interface{}) []interface{} {
 				})
 				continue
 			}
-			out = append(out, msgMap)
+			// Fall through to default — flatten content parts into a string.
+			fallthrough
 		default:
-			out = append(out, msgMap)
+			// Qoder's chat endpoint expects `content` to be a plain string.
+			// Anthropic / OpenAI multipart format ([{type:"text",text:"..."}])
+			// confuses the server — it ends up showing the literal JSON to
+			// the model. Flatten to text here.
+			cloned := make(map[string]interface{}, len(msgMap))
+			for k, v := range msgMap {
+				cloned[k] = v
+			}
+			cloned["content"] = extractContentGeneric(msgMap["content"])
+			out = append(out, cloned)
 		}
 	}
 	return out

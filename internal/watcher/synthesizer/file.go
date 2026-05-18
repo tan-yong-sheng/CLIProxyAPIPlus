@@ -171,43 +171,20 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 		}
 	}
 	if provider == "qoder" {
+		// Deserialize the on-disk JSON directly into the storage struct so
+		// every persisted field — including the cached model_configs map
+		// written by SaveTokenToFile — survives restarts and hot-reloads.
+		// Field-by-field copying from the metadata map drops nested types
+		// like ModelConfigs (map[string]json.RawMessage) and would force
+		// buildQoderModelConfig to fail with "model config cache is empty"
+		// whenever /algo/api/v2/model/list is unavailable.
 		var storage qoderauth.QoderTokenStorage
-		if email, _ := metadata["email"].(string); email != "" {
-			storage.Email = email
+		if errStorage := json.Unmarshal(data, &storage); errStorage == nil {
+			if storage.Type == "" {
+				storage.Type = "qoder"
+			}
+			a.Storage = &storage
 		}
-		if name, _ := metadata["name"].(string); name != "" {
-			storage.Name = name
-		}
-		if userID, _ := metadata["user_id"].(string); userID != "" {
-			storage.UserID = userID
-		}
-		if token, _ := metadata["token"].(string); token != "" {
-			storage.Token = token
-		}
-		if refreshToken, _ := metadata["refresh_token"].(string); refreshToken != "" {
-			storage.RefreshToken = refreshToken
-		}
-		if expireTime, ok := metadata["expire_time"].(float64); ok {
-			storage.ExpireTime = int64(expireTime)
-		}
-		if lastRefresh, _ := metadata["last_refresh"].(string); lastRefresh != "" {
-			storage.LastRefresh = lastRefresh
-		}
-		if machineID, _ := metadata["machine_id"].(string); machineID != "" {
-			storage.MachineID = machineID
-		}
-		if machineToken, _ := metadata["machine_token"].(string); machineToken != "" {
-			storage.MachineToken = machineToken
-		}
-		if machineType, _ := metadata["machine_type"].(string); machineType != "" {
-			storage.MachineType = machineType
-		}
-		if typeVal, _ := metadata["type"].(string); typeVal != "" {
-			storage.Type = typeVal
-		} else {
-			storage.Type = "qoder"
-		}
-		a.Storage = &storage
 	}
 	if provider == "gemini-cli" {
 		if virtuals := SynthesizeGeminiVirtualAuths(a, metadata, now); len(virtuals) > 0 {

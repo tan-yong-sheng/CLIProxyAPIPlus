@@ -33,6 +33,19 @@ func TestCodexStaticModelsIncludeGPT55(t *testing.T) {
 	assertGPT55ModelInfo(t, "lookup", model)
 }
 
+func TestKiroStaticModelsAreDynamic(t *testing.T) {
+	// Kiro model discovery is dynamic in sdk/cliproxy/service.go. Keep the
+	// static registry empty but non-nil so management callers still recognize
+	// the channel while newly discovered models flow through without code edits.
+	models := GetKiroModels()
+	if models == nil {
+		t.Fatal("GetKiroModels must return a non-nil slice so kiro stays a recognized channel")
+	}
+	if len(models) != 0 {
+		t.Fatalf("GetKiroModels should be empty (dynamic discovery only), got %d entries", len(models))
+	}
+}
+
 func TestWithXAIBuiltinsAddsVideoModel(t *testing.T) {
 	models := WithXAIBuiltins(nil)
 	found := false

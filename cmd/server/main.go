@@ -437,10 +437,6 @@ func main() {
 	var configFilePath string
 	if strings.TrimSpace(homeJWT) != "" {
 		configLoadedFromHome = true
-		trimmedHomePassword := strings.TrimSpace(homePassword)
-		homeCfg, errHomeCfg := parseHomeFlagConfig(homeAddr, trimmedHomePassword)
-		if errHomeCfg != nil {
-			log.Errorf("invalid -home address %q: %v", homeAddr, errHomeCfg)
 		ctxHome, cancelHome := context.WithTimeout(context.Background(), 30*time.Second)
 		homeCfg, errHomeCfg := home.ConfigFromJWT(ctxHome, homeJWT)
 		cancelHome()

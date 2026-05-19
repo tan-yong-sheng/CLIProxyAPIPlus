@@ -15,9 +15,20 @@ import (
 
 // httpClientCache caches HTTP clients by proxy URL to enable connection reuse
 var (
-	httpClientCache      = make(map[string]*http.Client)
-	httpClientCacheMutex sync.RWMutex
+	httpClientCache          = make(map[string]*http.Client)
+	httpClientCacheMutex     sync.RWMutex
+	cachedDefaultTransport   *http.Transport
+	cachedDefaultTransportOnce sync.Once
 )
+
+func getDefaultTransport() *http.Transport {
+	cachedDefaultTransportOnce.Do(func() {
+		if t, ok := http.DefaultTransport.(*http.Transport); ok && t != nil {
+			cachedDefaultTransport = t.Clone()
+		}
+	})
+	return cachedDefaultTransport
+}
 
 // NewProxyAwareHTTPClient creates an HTTP client with proper proxy configuration priority:
 // 1. Use auth.ProxyURL if configured (highest priority)
@@ -85,8 +96,8 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 		httpClient.Transport = rt
 	} else {
 		// Use default transport with preserved settings if no proxy or context transport is configured
-		if transport, ok := http.DefaultTransport.(*http.Transport); ok && transport != nil {
-			httpClient.Transport = transport.Clone()
+		if dt := getDefaultTransport(); dt != nil {
+			httpClient.Transport = dt.Clone()
 		}
 	}
 

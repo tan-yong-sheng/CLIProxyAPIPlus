@@ -150,12 +150,9 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 	if toolsRaw != nil {
-		if toolsBytes, err := json.Marshal(reqBody["tools"]); err == nil {
-			log.Debugf("[qoder-debug] outgoing tools: %s", string(toolsBytes))
-		}
+		log.Debugf("[qoder-debug] outgoing tools: %s", gjson.GetBytes(bodyBytes, "tools").Raw)
 	}
 
-	// Build COSY auth headers
 	headers, err := qoderauth.BuildAuthHeaders(
 		bodyBytes,
 		qoderauth.QoderChatURL,
@@ -171,18 +168,15 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 		return nil, fmt.Errorf("failed to build COSY auth: %w", err)
 	}
 
-	// Create HTTP request
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", qoderauth.QoderChatURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Set headers
 	httpReq.Header.Set("Content-Type", "application/json")
 	headers.Apply(httpReq)
 	httpReq.Header.Set("Accept", "text/event-stream")
 
-	// Send request
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, authRecord, 0)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
@@ -715,7 +709,6 @@ func (e *QoderExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
 	}
 	req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
-	// Build COSY auth headers
 	headers, err := qoderauth.BuildAuthHeaders(
 		bodyBytes,
 		req.URL.String(),
@@ -731,11 +724,9 @@ func (e *QoderExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
 		return nil, fmt.Errorf("failed to build COSY auth: %w", err)
 	}
 
-	// Set headers
 	req.Header.Set("Content-Type", "application/json")
 	headers.Apply(req)
 
-	// Execute request
 	req = req.WithContext(ctx)
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	return httpClient.Do(req)
@@ -885,13 +876,7 @@ func FetchQoderModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 		return registry.GetQoderModels()
 	}
 
-	// Persist the cached configs onto the auth's storage so subsequent
-	// ExecuteStream calls can read them. SetModelConfigs swaps the entire
-	// map under a write lock; readers (buildQoderModelConfig) take a read
-	// lock so they never see a half-built map.
-	if storage, ok := auth.Storage.(*qoderauth.QoderTokenStorage); ok {
-		storage.SetModelConfigs(configs)
-	}
+	storage.SetModelConfigs(configs)
 
 	log.Infof("qoder: fetched %d models from /algo/api/v2/model/list", len(models))
 	return models

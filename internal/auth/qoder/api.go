@@ -19,6 +19,9 @@ const (
 	QoderSigPath = "/api/v2/service/pro/sse/agent_chat_generation"
 	// QoderChatURL is the full URL for the streaming chat endpoint.
 	QoderChatURL = QoderInferURL + "/algo" + QoderSigPath + "?FetchKeys=llm_model_result&AgentId=agent_common"
+	// QoderChatURLEncoded is the chat URL with Encode=1, used when the request
+	// body is encoded with QoderEncodeBody to bypass WAF pattern matching.
+	QoderChatURLEncoded = QoderChatURL + "&Encode=1"
 	// QoderModelListURL is the full URL for /algo/api/v2/model/list on the
 	// inference host. The endpoint uses COSY signing; pass an empty body.
 	QoderModelListURL = QoderInferURL + "/algo/api/v2/model/list"

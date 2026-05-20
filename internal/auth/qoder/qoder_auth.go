@@ -35,17 +35,17 @@ const (
 	QoderUserInfoEndpoint = "https://openapi.qoder.sh/api/v1/userinfo"
 	// QoderIDEVersion is the upstream client version that the COSY signature
 	// scheme expects in payload.cosyVersion and the Cosy-Version header.
-	// 0.2.16 = NPM `@qoder-ai/qodercli@0.2.16` (May 2026); the Rust WASM
-	// signing module embedded in that release uses this string. Older Veria
-	// builds pass 0.14.2 (IDE) and qoder2api passes 0.1.43 — server accepts
-	// any of these as long as headers are consistent. Bump cautiously.
-	QoderIDEVersion = "0.2.16"
+	// 1.0.0 = what qodercli 0.2.16 actually sends in the COSY payload and
+	// Cosy-Version header (captured from live traffic). Earlier builds sent
+	// 0.14.2 (IDE) and qoder2api sends 0.1.43 — server accepts any of these
+	// as long as headers are consistent. Bump cautiously.
+	QoderIDEVersion = "1.0.0"
 	// QoderClientType is the client type advertised in the Cosy-Clienttype
 	// header. NPM qodercli (0.2.16) sends "5" (CLI). IDE/web sends "0".
 	QoderClientType = "5"
-	// QoderDataPolicy is the value sent in the Cosy-Data-Policy header —
-	// the server uses it to decide whether to log requests for training.
-	QoderDataPolicy = "AGREE"
+	// QoderDataPolicy is the value sent in the Cosy-Data-Policy header.
+	// qodercli sends "disagree" (opt-out of training data collection).
+	QoderDataPolicy = "disagree"
 	// QoderLoginVersion is the value sent in the Login-Version header.
 	// "v2" is what current qodercli/IDE builds advertise.
 	QoderLoginVersion = "v2"
@@ -53,10 +53,9 @@ const (
 	// qodercli's signing scheme treats this as a fixed magic string; the
 	// real client sends "x86_64_windows" regardless of host OS.
 	QoderMachineOS = "x86_64_windows"
-	// QoderMachineTypeMagic is a fixed token sent as Cosy-Machinetype.
-	// Reverse-engineered from Veria — value chosen so server-side checks
-	// pass; not derived from the local machine.
-	QoderMachineTypeMagic = "d19de69691ac029caa"
+	// QoderMachineTypeMagic is sent as Cosy-Machinetype.
+	// qodercli sends "5" (same as client type).
+	QoderMachineTypeMagic = "5"
 )
 
 // QoderTokenData represents the OAuth credentials from device flow polling

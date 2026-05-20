@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -93,63 +95,72 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 	}
 
 	isReasoning, _ := modelConfig["is_reasoning"].(bool)
-	isVL, _ := modelConfig["is_vl"].(bool)
-	maxInputTokens, _ := modelConfig["max_input_tokens"].(float64)
 	maxOutputTokens, _ := modelConfig["max_output_tokens"].(float64)
-
-	chatModelConfig := map[string]interface{}{
-		"key":              qoderModel,
-		"is_reasoning":     isReasoning,
-		"is_vl":            isVL,
-		"max_input_tokens": int(maxInputTokens),
-	}
 
 	// Last user message text — used by Qoder for the chat_context "current
 	// turn" preview slot. The full conversation still goes through `messages`.
 	lastUser := lastUserText(normalized)
 
+	// Stable IDs derived from content so retries hit upstream caches.
+	// session_id is stable per user+model (routing affinity).
+	// chat_record_id is deterministic per payload (dedup/cache key).
+	sessionID := stableHash("qoder-session", storage.UserID, qoderModel)
+	recordID := stableChatRecordID(qoderModel, normalized, toolsRaw, int(maxOutputTokens))
+
+	maxTokens := 32768
+	if maxOutputTokens > 0 {
+		maxTokens = int(maxOutputTokens)
+	}
+
 	reqBody := map[string]interface{}{
-		"stream":         true,
-		"chat_task":      "FREE_INPUT",
-		"is_reply":       false,
-		"is_retry":       false,
-		"code_language":  "",
-		"source":         1,
-		"version":        "3",
-		"chat_prompt":    "",
-		"session_type":   "qodercli",
-		"agent_id":       "agent_common",
-		"task_id":        "common",
-		"messages":       normalized,
-		"tools":          []interface{}{},
-		"request_id":     uuid.New().String(),
-		"request_set_id": uuid.New().String(),
-		"chat_record_id": uuid.New().String(),
-		"session_id":     uuid.New().String(),
-		"parameters":     map[string]interface{}{},
+		"request_id":       uuid.New().String(),
+		"request_set_id":   recordID,
+		"chat_record_id":   recordID,
+		"session_id":       sessionID,
+		"stream":           true,
+		"chat_task":        "FREE_INPUT",
+		"is_reply":         true,
+		"is_retry":         false,
+		"source":           1,
+		"version":          "3",
+		"session_type":     "qodercli",
+		"agent_id":         "agent_common",
+		"task_id":          "common",
+		"code_language":    "",
+		"chat_prompt":      "",
+		"image_urls":       nil,
+		"aliyun_user_type": "",
+		"system":           "",
+		"messages":         normalized,
+		"tools":            []interface{}{},
+		"parameters":       map[string]interface{}{"max_tokens": maxTokens},
 		"chat_context": map[string]interface{}{
 			"chatPrompt": "",
+			"imageUrls":  nil,
 			"extra": map[string]interface{}{
-				"context":         []interface{}{},
-				"modelConfig":     chatModelConfig,
-				"originalContent": map[string]interface{}{"type": "text", "text": lastUser},
+				"context": []interface{}{},
+				"modelConfig": map[string]interface{}{
+					"key":          qoderModel,
+					"is_reasoning": isReasoning,
+				},
+				"originalContent": lastUser,
 			},
 			"features": []interface{}{},
-			"text":     map[string]interface{}{"type": "text", "text": lastUser},
+			"text":     lastUser,
 		},
 		"model_config": modelConfig,
 		"business": map[string]interface{}{
+			"product":  "cli",
+			"version":  "1.0.0",
+			"type":     "agent",
+			"stage":    "start",
 			"id":       uuid.New().String(),
-			"type":     "agent_chat_generation",
-			"name":     "",
+			"name":     truncate(lastUser, 30),
 			"begin_at": time.Now().UnixMilli(),
 		},
 	}
 	if toolsRaw != nil {
 		reqBody["tools"] = toolsRaw
-	}
-	if maxOutputTokens > 0 {
-		reqBody["parameters"].(map[string]interface{})["max_tokens"] = int(maxOutputTokens)
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
@@ -161,9 +172,13 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 	}
 	log.Debugf("[qoder-debug] outgoing request body: %s", string(bodyBytes))
 
+	// Encode the body to bypass Alibaba Cloud WAF pattern matching.
+	// The server decodes when &Encode=1 is present in the URL.
+	encodedBytes := []byte(helps.QoderEncodeBody(bodyBytes))
+
 	headers, err := qoderauth.BuildAuthHeaders(
-		bodyBytes,
-		qoderauth.QoderChatURL,
+		encodedBytes,
+		qoderauth.QoderChatURLEncoded,
 		qoderauth.CosyCredentials{
 			UserID:    storage.UserID,
 			AuthToken: storage.Token,
@@ -176,14 +191,24 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 		return nil, fmt.Errorf("failed to build COSY auth: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", qoderauth.QoderChatURL, bytes.NewReader(bodyBytes))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", qoderauth.QoderChatURLEncoded, bytes.NewReader(encodedBytes))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
-	headers.Apply(httpReq)
 	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("Cache-Control", "no-cache")
+	headers.Apply(httpReq)
+	modelSource, _ := modelConfig["source"].(string)
+	if modelSource == "" {
+		modelSource = "system"
+	}
+	httpReq.Header.Set("X-Model-Key", qoderModel)
+	httpReq.Header.Set("X-Model-Source", modelSource)
+	// Disable automatic gzip — Accept-Encoding: gzip triggers signature
+	// validation on the Qoder upstream and causes 403 Signature invalid.
+	httpReq.Header.Set("Accept-Encoding", "identity")
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, authRecord, 0)
 	httpResp, err := httpClient.Do(httpReq)
@@ -198,7 +223,6 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 		server := httpResp.Header.Get("Server")
 		bodyPreview := truncate(string(body), 500)
 		log.WithFields(log.Fields{
-			"status":         httpResp.StatusCode,
 			"url":            qoderauth.QoderChatURL,
 			"server":         server,
 			"content_type":   httpResp.Header.Get("Content-Type"),
@@ -376,26 +400,14 @@ func extractContentGeneric(content interface{}) string {
 	}
 }
 
-// normalizeQoderMessages clones each message and applies three sanitizations
+// normalizeQoderMessages clones each message and applies sanitizations
 // required by Qoder's upstream:
 //
 //  1. Flatten content: Anthropic/OpenAI multipart content arrays
 //     ([{type:"text",text:"..."}]) are collapsed to plain strings.
 //
 //  2. Drop system messages: Qoder rejects role="system"; they are silently
-//     removed. The system prompt is already embedded in the first user turn
-//     by the Claude Code client, so context is not lost.
-//
-//  3. Clear tool_call arguments: Qoder's upstream sits behind Alibaba Cloud
-//     WAF which blocks requests containing shell metacharacter sequences
-//     (e.g. "2>/dev/null || echo") anywhere in the body. Historical bash
-//     tool_calls accumulate these patterns; clearing the entire arguments
-//     string prevents WAF 405 rejections without affecting the model's
-//     ability to understand the conversation history.
-//
-//  4. Strip control characters: non-printable bytes (U+0000–U+001F except
-//     tab/LF/CR) in message content cause Qoder to return 500; they are
-//     removed from all string fields.
+//     removed.
 func normalizeQoderMessages(messages []interface{}) []interface{} {
 	if len(messages) == 0 {
 		return nil
@@ -414,48 +426,10 @@ func normalizeQoderMessages(messages []interface{}) []interface{} {
 		for k, v := range msgMap {
 			cloned[k] = v
 		}
-		cloned["content"] = stripControlChars(extractContentGeneric(msgMap["content"]))
-		// Clear tool_call arguments to avoid triggering WAF command-injection rules.
-		if toolCalls, ok := cloned["tool_calls"].([]interface{}); ok {
-			sanitized := make([]interface{}, 0, len(toolCalls))
-			for _, tc := range toolCalls {
-				tcMap, ok := tc.(map[string]interface{})
-				if !ok {
-					sanitized = append(sanitized, tc)
-					continue
-				}
-				tcCloned := make(map[string]interface{}, len(tcMap))
-				for k, v := range tcMap {
-					tcCloned[k] = v
-				}
-				if fn, ok := tcCloned["function"].(map[string]interface{}); ok {
-					fnCloned := make(map[string]interface{}, len(fn))
-					for k, v := range fn {
-						fnCloned[k] = v
-					}
-					fnCloned["arguments"] = "{}"
-					tcCloned["function"] = fnCloned
-				}
-				sanitized = append(sanitized, tcCloned)
-			}
-			cloned["tool_calls"] = sanitized
-		}
+		cloned["content"] = extractContentGeneric(msgMap["content"])
 		out = append(out, cloned)
 	}
 	return out
-}
-
-// stripControlChars removes non-printable control characters (U+0000–U+001F)
-// from s, preserving tab (U+0009), line feed (U+000A), and carriage return
-// (U+000D). Qoder's upstream returns 500 when the request body contains
-// bare control bytes.
-func stripControlChars(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 && r != '\t' && r != '\n' && r != '\r' {
-			return -1
-		}
-		return r
-	}, s)
 }
 
 func buildOpenAIChunk(inner map[string]interface{}, model string) ([]byte, error) {
@@ -892,7 +866,6 @@ func FetchQoderModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 			display = key
 		}
 		ctxLen := int(entry.Get("max_input_tokens").Int())
-		isReasoning := entry.Get("is_reasoning").Bool()
 		isVL := entry.Get("is_vl").Bool()
 
 		// Cache the raw upstream JSON for this model so ExecuteStream can
@@ -913,8 +886,29 @@ func FetchQoderModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 		if isVL {
 			mi.SupportedInputModalities = []string{"TEXT", "IMAGE"}
 		}
-		if isReasoning {
-			mi.Thinking = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
+		// Parse thinking_config from upstream. Qoder returns per-model
+		// effort levels (e.g. dmodel has only high/max, ultimate has
+		// low/medium/high/max/xhigh) and a disabled key to indicate
+		// whether reasoning can be turned off. Models without
+		// thinking_config but with is_reasoning=true still get a
+		// basic Thinking marker (no predefined levels).
+		if tc := entry.Get("thinking_config"); tc.Exists() {
+			ts := &registry.ThinkingSupport{}
+			if tc.Get("disabled").Exists() {
+				ts.ZeroAllowed = true
+			}
+			efforts := tc.Get("enabled.efforts")
+			if efforts.Exists() && efforts.IsObject() {
+				levels := make([]string, 0, 5)
+				efforts.ForEach(func(key, _ gjson.Result) bool {
+					levels = append(levels, key.String())
+					return true
+				})
+				ts.Levels = levels
+			}
+			mi.Thinking = ts
+		} else if entry.Get("is_reasoning").Bool() {
+			mi.Thinking = &registry.ThinkingSupport{}
 		}
 		models = append(models, mi)
 		return true
@@ -929,6 +923,48 @@ func FetchQoderModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 
 	log.Infof("qoder: fetched %d models from /algo/api/v2/model/list", len(models))
 	return models
+}
+
+// stableHash returns a deterministic hex identifier from the given inputs.
+func stableHash(prefix string, inputs ...string) string {
+	h := sha256.New()
+	h.Write([]byte(prefix))
+	for _, in := range inputs {
+		h.Write([]byte{0})
+		h.Write([]byte(in))
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// stableChatRecordID produces a deterministic chat_record_id from the
+// request payload so retries with identical content hit upstream caches.
+func stableChatRecordID(model string, messages []interface{}, toolsRaw interface{}, maxTokens int) string {
+	h := sha256.New()
+	h.Write([]byte("qoder-record"))
+	h.Write([]byte{0})
+	h.Write([]byte(model))
+	for _, msg := range messages {
+		m, _ := msg.(map[string]interface{})
+		if m == nil {
+			continue
+		}
+		if role, _ := m["role"].(string); role != "" {
+			h.Write([]byte{0})
+			h.Write([]byte(role))
+		}
+		if content, _ := m["content"].(string); content != "" {
+			h.Write([]byte{0})
+			h.Write([]byte(content))
+		}
+	}
+	if toolsRaw != nil {
+		toolsJSON, _ := json.Marshal(toolsRaw)
+		h.Write([]byte{0})
+		h.Write(toolsJSON)
+	}
+	h.Write([]byte{0})
+	h.Write([]byte(fmt.Sprintf("mt=%d", maxTokens)))
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 func truncate(s string, n int) string {

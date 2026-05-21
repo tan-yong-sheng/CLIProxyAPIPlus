@@ -71,11 +71,13 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 		return nil, fmt.Errorf("failed to parse request: %w", err)
 	}
 
-	// Map model name
+	// Map model name — strip provider prefix so qoder/auto → auto
 	model, _ := chatReq["model"].(string)
-	qoderModel := model
-	if mapped, ok := qoderauth.ModelMap[model]; ok {
+	qoderModel := strings.TrimPrefix(model, "qoder/")
+	if mapped, ok := qoderauth.ModelMap[qoderModel]; ok {
 		qoderModel = mapped
+	} else {
+		return nil, fmt.Errorf("unsupported qoder model: %q (received %q)", qoderModel, model)
 	}
 
 	// Normalize messages: flatten Anthropic/OpenAI multipart content arrays

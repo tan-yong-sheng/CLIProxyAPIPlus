@@ -80,6 +80,35 @@ func TestValidateModelsCatalogRejectsInvalidDefinitions(t *testing.T) {
 	}
 }
 
+func TestDetectChangedProvidersIncludesQoder(t *testing.T) {
+	base := validTestModelsCatalog()
+	// identical copies — no provider should be detected as changed
+	changed := detectChangedProviders(base, base)
+	if len(changed) != 0 {
+		t.Fatalf("expected no changes for identical catalogs, got: %v", changed)
+	}
+
+	// Only Qoder differs
+	modified := validTestModelsCatalog()
+	modified.Qoder = []*ModelInfo{{ID: "qoder-new-model"}}
+	changed = detectChangedProviders(base, modified)
+	found := false
+	for _, p := range changed {
+		if p == "qoder" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected qoder in changed providers, got: %v", changed)
+	}
+
+	// Only Qoder changed and no other spurious changes
+	if len(changed) != 1 {
+		t.Fatalf("expected exactly 1 changed provider (qoder), got: %v", changed)
+	}
+}
+
 func validTestModelsCatalog() *staticModelsJSON {
 	models := []*ModelInfo{{ID: "test-model"}}
 	return &staticModelsJSON{
@@ -93,6 +122,7 @@ func validTestModelsCatalog() *staticModelsJSON {
 		CodexPlus:   models,
 		CodexPro:    models,
 		Kimi:        models,
+		Qoder:       models,
 		Antigravity: models,
 		XAI:         models,
 	}

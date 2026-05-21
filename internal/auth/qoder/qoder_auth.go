@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -248,10 +249,20 @@ func (qa *QoderAuth) PollForToken(ctx context.Context, deviceFlow *DeviceFlowRes
 		}
 
 		// Defensive: surface a clear error if the upstream returned 200 but
-		// the token field is empty. Log raw body at debug level so we can see
-		// the real response shape in deployed logs.
+		// the token field is empty. Log response field names (not values) so we
+		// can detect upstream schema changes without exposing token material.
 		if response.Token == "" {
-			log.Debugf("Qoder poll response with empty access token, body: %s", string(body))
+			var respFields map[string]interface{}
+			keys := "<unparseable>"
+			if json.Unmarshal(body, &respFields) == nil {
+				ks := make([]string, 0, len(respFields))
+				for k := range respFields {
+					ks = append(ks, k)
+				}
+				sort.Strings(ks)
+				keys = strings.Join(ks, ", ")
+			}
+			log.Debugf("Qoder poll response with empty access token; response fields: [%s] (status=%d, body_len=%d)", keys, resp.StatusCode, len(body))
 			return nil, fmt.Errorf("device token poll returned empty access token; raw response keys may have changed")
 		}
 
@@ -315,8 +326,18 @@ func (qa *QoderAuth) RefreshTokens(ctx context.Context, accessToken, refreshToke
 	}
 
 	if response.Token == "" {
-		log.Debugf("Qoder refresh response with empty access token, body: %s", string(body))
-		return nil, fmt.Errorf("token refresh returned empty access token; raw response keys may have changed")
+			var respFields map[string]interface{}
+			keys := "<unparseable>"
+			if json.Unmarshal(body, &respFields) == nil {
+				ks := make([]string, 0, len(respFields))
+				for k := range respFields {
+					ks = append(ks, k)
+				}
+				sort.Strings(ks)
+				keys = strings.Join(ks, ", ")
+			}
+			log.Debugf("Qoder refresh response with empty access token; response fields: [%s] (status=%d, body_len=%d)", keys, resp.StatusCode, len(body))
+			return nil, fmt.Errorf("token refresh returned empty access token; raw response keys may have changed")
 	}
 
 	expireMs := parseExpiresAt(response.ExpiresAt, response.ExpiresIn)

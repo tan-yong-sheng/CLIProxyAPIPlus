@@ -261,7 +261,6 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 			if len(line) == 0 {
 				continue
 			}
-			log.Debugf("[qoder-sse] %s", string(line))
 
 			// Skip non-data lines
 			if !bytes.HasPrefix(line, []byte("data:")) {

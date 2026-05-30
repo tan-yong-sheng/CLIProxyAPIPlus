@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	qoderauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/qoder"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
@@ -953,5 +954,112 @@ func TestFileSynthesizer_Synthesize_MultiProjectGeminiWithNote(t *testing.T) {
 		if gotPriority := v.Attributes["priority"]; gotPriority != "5" {
 			t.Errorf("expected virtual %d priority %q, got %q", i, "5", gotPriority)
 		}
+	}
+}
+
+// TestSynthesizeFileAuths_QoderPreservesModelConfigs verifies that hot-reloading
+// a qoder auth file does not drop the cached model_configs map written by
+// QoderTokenStorage.SaveTokenToFile. Without it, buildQoderModelConfig fails
+// with "model config cache is empty" until /algo/api/v2/model/list returns,
+// even when the disk copy already has the answer.
+func TestSynthesizeFileAuths_QoderPreservesModelConfigs(t *testing.T) {
+	tmpDir := t.TempDir()
+	authPath := filepath.Join(tmpDir, "qoder-test@example.com.json")
+
+	storage := &qoderauth.QoderTokenStorage{
+		Token:        "tok",
+		RefreshToken: "rtok",
+		UserID:       "u-123",
+		Name:         "Test",
+		Email:        "test@example.com",
+		ExpireTime:   1234567890,
+		Type:         "qoder",
+		MachineID:    "m-1",
+		ModelConfigs: map[string]json.RawMessage{
+			"dfmodel": json.RawMessage(`{"key":"dfmodel","format":"openai","is_vl":true,"max_input_tokens":131072}`),
+		},
+	}
+	if err := storage.SaveTokenToFile(authPath); err != nil {
+		t.Fatalf("SaveTokenToFile: %v", err)
+	}
+
+	data, err := os.ReadFile(authPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	ctx := &SynthesisContext{
+		Config:      &config.Config{},
+		AuthDir:     tmpDir,
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+	auths := SynthesizeAuthFile(ctx, authPath, data)
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+
+	a := auths[0]
+	if a.Provider != "qoder" {
+		t.Fatalf("expected provider qoder, got %q", a.Provider)
+	}
+	storedAny := a.Storage
+	stored, ok := storedAny.(*qoderauth.QoderTokenStorage)
+	if !ok {
+		t.Fatalf("expected *QoderTokenStorage, got %T", storedAny)
+	}
+	if stored.Email != "test@example.com" {
+		t.Errorf("expected email preserved, got %q", stored.Email)
+	}
+	raw, ok := stored.GetModelConfig("dfmodel")
+	if !ok {
+		t.Fatalf("expected cached model_configs entry to survive reload, keys=%v", stored.ModelConfigKeys())
+	}
+	if !strings.Contains(string(raw), `"is_vl":true`) {
+		t.Errorf("expected raw model_config to contain is_vl, got %s", string(raw))
+	}
+}
+
+// TestSynthesizeFileAuths_QoderHandlesMissingModelConfigs ensures that auth
+// files written by older builds (no model_configs key) still synthesize
+// without error — the cache simply starts empty and FetchQoderModels will
+// repopulate it.
+func TestSynthesizeFileAuths_QoderHandlesMissingModelConfigs(t *testing.T) {
+	tmpDir := t.TempDir()
+	authPath := filepath.Join(tmpDir, "qoder-old@example.com.json")
+	payload := map[string]any{
+		"type":          "qoder",
+		"email":         "old@example.com",
+		"token":         "tok",
+		"refresh_token": "rtok",
+		"user_id":       "u-1",
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.WriteFile(authPath, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	ctx := &SynthesisContext{
+		Config:      &config.Config{},
+		AuthDir:     tmpDir,
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+	auths := SynthesizeAuthFile(ctx, authPath, data)
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+	stored, ok := auths[0].Storage.(*qoderauth.QoderTokenStorage)
+	if !ok {
+		t.Fatalf("expected *QoderTokenStorage, got %T", auths[0].Storage)
+	}
+	if stored.Email != "old@example.com" {
+		t.Errorf("expected email preserved, got %q", stored.Email)
+	}
+	if len(stored.ModelConfigKeys()) != 0 {
+		t.Errorf("expected empty cache, got %v", stored.ModelConfigKeys())
 	}
 }

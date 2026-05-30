@@ -25,6 +25,7 @@ type staticModelsJSON struct {
 	CodexPlus   []*ModelInfo `json:"codex-plus"`
 	CodexPro    []*ModelInfo `json:"codex-pro"`
 	Kimi        []*ModelInfo `json:"kimi"`
+	Qoder       []*ModelInfo `json:"qoder"`
 	Antigravity []*ModelInfo `json:"antigravity"`
 	XAI         []*ModelInfo `json:"xai"`
 }
@@ -253,6 +254,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetAntigravityModels()
 	case "xai", "x-ai", "grok":
 		return GetXAIModels()
+	case "qoder":
+		return GetQoderModels()
 	default:
 		return nil
 	}
@@ -288,6 +291,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		data.Kimi,
 		data.Antigravity,
 		data.XAI,
+		data.Qoder,
 	}
 	for _, models := range allModels {
 		for _, m := range models {
@@ -754,4 +758,9 @@ func GetAmazonQModels() []*ModelInfo {
 			MaxCompletionTokens: 64000,
 		},
 	}
+}
+
+// GetQoderModels returns the Qoder model definitions.
+func GetQoderModels() []*ModelInfo {
+	return cloneModelInfos(getModels().Qoder)
 }

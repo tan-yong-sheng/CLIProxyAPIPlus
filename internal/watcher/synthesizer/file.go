@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
+	qoderauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/qoder"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/geminicli"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
@@ -167,6 +168,22 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 					a.Attributes["plan_type"] = pt
 				}
 			}
+		}
+	}
+	if provider == "qoder" {
+		// Deserialize the on-disk JSON directly into the storage struct so
+		// every persisted field — including the cached model_configs map
+		// written by SaveTokenToFile — survives restarts and hot-reloads.
+		// Field-by-field copying from the metadata map drops nested types
+		// like ModelConfigs (map[string]json.RawMessage) and would force
+		// buildQoderModelConfig to fail with "model config cache is empty"
+		// whenever /algo/api/v2/model/list is unavailable.
+		var storage qoderauth.QoderTokenStorage
+		if errStorage := json.Unmarshal(data, &storage); errStorage == nil {
+			if storage.Type == "" {
+				storage.Type = "qoder"
+			}
+			a.Storage = &storage
 		}
 	}
 	if provider == "gemini-cli" {

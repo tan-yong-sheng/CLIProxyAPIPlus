@@ -36,6 +36,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kilo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
+	qoderauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/qoder"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
@@ -519,6 +520,22 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		if rawNote, ok := auth.Metadata["note"].(string); ok {
 			if trimmed := strings.TrimSpace(rawNote); trimmed != "" {
 				entry["note"] = trimmed
+			}
+		}
+	}
+	// Expose Qoder credit usage if available.
+	if auth.Provider == "qoder" {
+		if storage, ok := auth.Storage.(*qoderauth.QoderTokenStorage); ok && storage != nil && storage.GetUsageInfo() != nil {
+			u := storage.GetUsageInfo()
+			entry["usage"] = gin.H{
+				"used":                   u.UserQuota.Used,
+				"total":                  u.UserQuota.Total,
+				"remaining":              u.UserQuota.Remaining,
+				"percentage":             u.TotalUsagePercentage,
+				"unit":                   u.UserQuota.Unit,
+				"is_quota_exceeded":      u.IsQuotaExceeded,
+				"expires_at":             u.ExpiresAt,
+				"org_resource_remaining": u.OrgResourcePackage.Remaining,
 			}
 		}
 	}
@@ -2974,6 +2991,80 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 	}()
 
 	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})
+}
+
+func (h *Handler) RequestQoderToken(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	fmt.Println("Initializing Qoder authentication...")
+
+	state := fmt.Sprintf("qod-%d", time.Now().UnixNano())
+	qoderAuth := qoderauth.NewQoderAuth(h.cfg)
+
+	deviceFlow, err := qoderAuth.InitiateDeviceFlow(ctx)
+	if err != nil {
+		log.Errorf("Failed to generate authorization URL: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
+		return
+	}
+
+	RegisterOAuthSession(state, "qoder")
+
+	go func() {
+		fmt.Println("Waiting for authentication...")
+		tokenData, errPollForToken := qoderAuth.PollForToken(ctx, deviceFlow)
+		if errPollForToken != nil {
+			SetOAuthSessionError(state, "Authentication failed")
+			fmt.Printf("Authentication failed: %v\n", errPollForToken)
+			return
+		}
+
+		storage := qoderAuth.CreateTokenStorage(tokenData, deviceFlow.MachineID)
+		// Resolve a human-readable label: prefer the email from /userinfo,
+		// fall back to user_id, then to a timestamp so the auth file always
+		// gets a unique, non-empty name without prompting the operator.
+		name, email := qoderAuth.SaveUserInfo(ctx, tokenData.AccessToken, tokenData.UserID, "", "")
+		storage.Name = name
+		switch {
+		case strings.TrimSpace(email) != "":
+			storage.Email = strings.TrimSpace(email)
+		case strings.TrimSpace(tokenData.UserID) != "":
+			storage.Email = strings.TrimSpace(tokenData.UserID)
+		default:
+			storage.Email = fmt.Sprintf("user-%d", time.Now().UnixMilli())
+		}
+		fileName := fmt.Sprintf("qoder-%s.json", storage.Email)
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "qoder",
+			FileName: fileName,
+			Label: func() string {
+				if storage.Name != "" {
+					return storage.Name
+				}
+				if storage.Email != "" {
+					return storage.Email
+				}
+				return "Qoder User"
+			}(),
+			Storage:  storage,
+			Metadata: map[string]any{"email": storage.Email},
+		}
+		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		if errSave != nil {
+			log.Errorf("Failed to save authentication tokens: %v", errSave)
+			SetOAuthSessionError(state, "Failed to save authentication tokens")
+			return
+		}
+
+		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
+		fmt.Println("You can now use Qoder services through this CLI")
+		CompleteOAuthSession(state)
+		CompleteOAuthSessionsByProvider("qoder")
+	}()
+
+	c.JSON(200, gin.H{"status": "ok", "url": deviceFlow.VerificationURIComplete, "state": state})
 }
 
 func (h *Handler) RequestKimiToken(c *gin.Context) {

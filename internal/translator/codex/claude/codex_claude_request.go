@@ -337,6 +337,22 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 	return template
 }
 
+// normalizeCodexServiceTier maps a requested service_tier to the value Codex
+// accepts. "fast" and "priority" (case-insensitive, trimmed) both resolve to
+// "priority"; any other value yields an empty string so the field is omitted.
+func normalizeCodexServiceTier(result gjson.Result) string {
+	if !result.Exists() || result.Type != gjson.String {
+		return ""
+	}
+
+	switch strings.ToLower(strings.TrimSpace(result.String())) {
+	case "fast", "priority":
+		return "priority"
+	default:
+		return ""
+	}
+}
+
 // shortenCodexCallIDIfNeeded keeps Claude tool IDs within the OpenAI Responses
 // API call_id limit while preserving a stable, low-collision mapping.
 func shortenCodexCallIDIfNeeded(id string) string {

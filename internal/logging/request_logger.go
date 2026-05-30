@@ -380,13 +380,20 @@ type homeRequestLogPayload struct {
 	RequestLog string              `json:"request_log,omitempty"`
 }
 
-func cloneHeaders(headers map[string][]string) map[string][]string {
+// sanitizeHomeHeaders clones the header map while replacing the values of
+// sensitive headers (credentials, tokens, secrets) with "[REDACTED]" so that
+// logs forwarded to the home collector never carry usable secrets.
+func sanitizeHomeHeaders(headers map[string][]string) map[string][]string {
 	if len(headers) == 0 {
 		return nil
 	}
 	out := make(map[string][]string, len(headers))
 	for key, values := range headers {
 		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		if isHomeSensitiveHeader(key) {
+			out[key] = []string{"[REDACTED]"}
 			continue
 		}
 		if values == nil {
@@ -403,6 +410,20 @@ func cloneHeaders(headers map[string][]string) map[string][]string {
 	return out
 }
 
+// isHomeSensitiveHeader reports whether a header carries credentials or secrets
+// that must be redacted before forwarding logs off-host.
+func isHomeSensitiveHeader(key string) bool {
+	lowerKey := strings.ToLower(strings.TrimSpace(key))
+	switch lowerKey {
+	case "authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key", "x-goog-api-key":
+		return true
+	}
+	return strings.Contains(lowerKey, "api-key") ||
+		strings.Contains(lowerKey, "apikey") ||
+		strings.Contains(lowerKey, "token") ||
+		strings.Contains(lowerKey, "secret")
+}
+
 func (l *FileRequestLogger) forwardRequestLogToHome(ctx context.Context, headers map[string][]string, requestID string, logText string) error {
 	if l == nil || !l.homeEnabled {
 		return nil
@@ -412,7 +433,7 @@ func (l *FileRequestLogger) forwardRequestLogToHome(ctx context.Context, headers
 		return nil
 	}
 	payload := homeRequestLogPayload{
-		Headers:    cloneHeaders(headers),
+		Headers:    sanitizeHomeHeaders(headers),
 		RequestID:  strings.TrimSpace(requestID),
 		RequestLog: logText,
 	}
@@ -2058,7 +2079,7 @@ func (w *homeStreamingLogWriter) Close() error {
 	}
 
 	payload := homeRequestLogPayload{
-		Headers:    cloneHeaders(w.requestHeaders),
+		Headers:    sanitizeHomeHeaders(w.requestHeaders),
 		RequestID:  w.requestID,
 		RequestLog: buf.String(),
 	}

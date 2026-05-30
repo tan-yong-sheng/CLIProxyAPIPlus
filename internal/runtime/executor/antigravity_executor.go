@@ -1943,7 +1943,7 @@ func (e *AntigravityExecutor) updateAntigravityCreditsBalance(ctx context.Contex
 		log.Debugf("antigravity executor: marshal loadCodeAssist request error: %v", errMarshal)
 		return
 	}
-	baseURL := antigravityLoadCodeAssistBaseURL(auth)
+	baseURL := buildBaseURL(auth)
 	endpointURL := strings.TrimSuffix(baseURL, "/") + "/v1internal:loadCodeAssist"
 	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, bytes.NewReader(loadReqBody))
 	if errReq != nil {
@@ -2234,13 +2234,6 @@ func buildBaseURL(auth *cliproxyauth.Auth) string {
 		return baseURLs[0]
 	}
 	return antigravityBaseURLDaily
-}
-
-func antigravityLoadCodeAssistBaseURL(auth *cliproxyauth.Auth) string {
-	if base := resolveCustomAntigravityBaseURL(auth); base != "" {
-		return base
-	}
-	return antigravityBaseURLProd
 }
 
 func resolveHost(base string) string {

@@ -14,6 +14,8 @@ go.sum merge=union
 
 # Our fork-maintenance files — always keep ours
 .github/workflows/upstream-sync.yml merge=ours
+.github/workflows/release.yaml merge=ours
+.goreleaser.yml merge=ours
 .gitattributes merge=ours
 README-ccs-fork.md merge=ours
 

@@ -1500,25 +1500,37 @@ var (
 // cursorModelsOrFallback returns the cached model list for authID when one
 // exists, otherwise the hardcoded fallback. The fallback is only ever used
 // when no prior successful fetch has populated the cache for this auth.
+//
+// The returned slice is a shallow copy of the cached entry: callers may
+// safely replace slice elements without corrupting the cache. Callers must
+// still treat ModelInfo fields as read-only -- a full deep copy would also
+// clone each entry's *ThinkingSupport, which is unnecessary given that
+// downstream consumers (registry reconcile) treat models as immutable.
 func cursorModelsOrFallback(authID string) []*registry.ModelInfo {
 	if authID != "" {
 		cursorModelsCacheMu.RLock()
 		cached, ok := cursorModelsCache[authID]
 		cursorModelsCacheMu.RUnlock()
 		if ok && len(cached) > 0 {
-			return cached
+			dup := make([]*registry.ModelInfo, len(cached))
+			copy(dup, cached)
+			return dup
 		}
 	}
 	return GetCursorFallbackModels()
 }
 
 // cacheCursorModels records a successful model fetch for future fallback use.
+// A shallow copy of the slice is stored so the caller can freely mutate its
+// own slice header (append, element replacement) without corrupting the cache.
 func cacheCursorModels(authID string, models []*registry.ModelInfo) {
 	if authID == "" || len(models) == 0 {
 		return
 	}
+	dup := make([]*registry.ModelInfo, len(models))
+	copy(dup, models)
 	cursorModelsCacheMu.Lock()
-	cursorModelsCache[authID] = models
+	cursorModelsCache[authID] = dup
 	cursorModelsCacheMu.Unlock()
 }
 
@@ -1527,7 +1539,13 @@ func cacheCursorModels(authID string, models []*registry.ModelInfo) {
 // only falls back to GetCursorFallbackModels() when no cached list exists.
 // This prevents a transient network blip from permanently shrinking the model
 // registry to stale hardcoded names.
+//
+// A nil auth is tolerated by returning the hardcoded fallback; this avoids a
+// panic in registry reconcile paths where auth may legitimately be nil.
 func FetchCursorModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
+	if auth == nil {
+		return GetCursorFallbackModels()
+	}
 	authID := auth.ID
 
 	accessToken := cursorAccessToken(auth)

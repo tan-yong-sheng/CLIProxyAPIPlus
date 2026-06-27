@@ -296,7 +296,7 @@ func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	parsed := parseOpenAIRequest(payload)
 	ccSessId := extractClaudeCodeSessionId(req.Payload)
 	conversationId := deriveConversationId(apiKeyFromContext(ctx), ccSessId, parsed.SystemPrompt)
-	params := buildRunRequestParams(parsed, conversationId)
+	params := buildRunRequestParams(parsed, conversationId, req.Model)
 
 	requestBytes := cursorproto.EncodeRunRequest(params)
 	framedRequest := cursorproto.FrameConnectMessage(requestBytes, 0)
@@ -455,7 +455,7 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	saved, hasCheckpoint := e.checkpoints[checkpointKey]
 	e.mu.Unlock()
 
-	params := buildRunRequestParams(parsed, conversationId)
+	params := buildRunRequestParams(parsed, conversationId, req.Model)
 
 	if hasCheckpoint && saved.data != nil && saved.authID == authID {
 		// Same auth — use checkpoint normally
@@ -479,7 +479,7 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		e.mu.Unlock()
 		if len(parsed.ToolResults) > 0 || len(parsed.Turns) > 0 {
 			flattenConversationIntoUserText(parsed)
-			params = buildRunRequestParams(parsed, conversationId)
+			params = buildRunRequestParams(parsed, conversationId, req.Model)
 		}
 	} else if len(parsed.ToolResults) > 0 || len(parsed.Turns) > 0 {
 		// Fallback: no checkpoint available (cold resume / proxy restart).
@@ -487,7 +487,7 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		// Cursor's turns encoding is not reliably read by the model, but userText always works.
 		log.Debugf("cursor: no checkpoint, flattening %d turns + %d tool results into userText", len(parsed.Turns), len(parsed.ToolResults))
 		flattenConversationIntoUserText(parsed)
-		params = buildRunRequestParams(parsed, conversationId)
+		params = buildRunRequestParams(parsed, conversationId, req.Model)
 	}
 	requestBytes := cursorproto.EncodeRunRequest(params)
 	framedRequest := cursorproto.FrameConnectMessage(requestBytes, 0)
@@ -1289,9 +1289,18 @@ func parseDataURL(url string) *cursorproto.ImageData {
 	}
 }
 
-func buildRunRequestParams(parsed *parsedOpenAIRequest, conversationId string) *cursorproto.RunRequestParams {
+func buildRunRequestParams(parsed *parsedOpenAIRequest, conversationId string, modelOverride string) *cursorproto.RunRequestParams {
+	// modelOverride lets callers supply an upstream-resolved model name (e.g. the
+	// result of resolving an oauth-model-alias entry) while keeping the original
+	// client-facing model name in parsed.Model for response formatting. When empty,
+	// fall back to parsed.Model so existing call sites that don't need an override
+	// behave unchanged.
+	modelId := strings.TrimSpace(modelOverride)
+	if modelId == "" {
+		modelId = parsed.Model
+	}
 	params := &cursorproto.RunRequestParams{
-		ModelId:        parsed.Model,
+		ModelId:        modelId,
 		SystemPrompt:   parsed.SystemPrompt,
 		UserText:       parsed.UserText,
 		MessageId:      uuid.New().String(),
@@ -1479,11 +1488,69 @@ func decodeMcpArgsToJSON(args map[string][]byte) string {
 
 // --- Model Discovery ---
 
-// FetchCursorModels retrieves available models from Cursor's API.
+// cursorModelsCache stores the last successful model list per auth so a
+// transient GetUsableModels failure does not collapse the model registry to
+// the hardcoded fallback (which can drop models the user actually calls,
+// e.g. composer-2.5). Keyed by auth.ID (the auth file name).
+var (
+	cursorModelsCacheMu sync.RWMutex
+	cursorModelsCache   = make(map[string][]*registry.ModelInfo)
+)
+
+// cursorModelsOrFallback returns the cached model list for authID when one
+// exists, otherwise the hardcoded fallback. The fallback is only ever used
+// when no prior successful fetch has populated the cache for this auth.
+//
+// The returned slice is a shallow copy of the cached entry: callers may
+// safely replace slice elements without corrupting the cache. Callers must
+// still treat ModelInfo fields as read-only -- a full deep copy would also
+// clone each entry's *ThinkingSupport, which is unnecessary given that
+// downstream consumers (registry reconcile) treat models as immutable.
+func cursorModelsOrFallback(authID string) []*registry.ModelInfo {
+	if authID != "" {
+		cursorModelsCacheMu.RLock()
+		cached, ok := cursorModelsCache[authID]
+		cursorModelsCacheMu.RUnlock()
+		if ok && len(cached) > 0 {
+			dup := make([]*registry.ModelInfo, len(cached))
+			copy(dup, cached)
+			return dup
+		}
+	}
+	return GetCursorFallbackModels()
+}
+
+// cacheCursorModels records a successful model fetch for future fallback use.
+// A shallow copy of the slice is stored so the caller can freely mutate its
+// own slice header (append, element replacement) without corrupting the cache.
+func cacheCursorModels(authID string, models []*registry.ModelInfo) {
+	if authID == "" || len(models) == 0 {
+		return
+	}
+	dup := make([]*registry.ModelInfo, len(models))
+	copy(dup, models)
+	cursorModelsCacheMu.Lock()
+	cursorModelsCache[authID] = dup
+	cursorModelsCacheMu.Unlock()
+}
+
+// FetchCursorModels retrieves available models from Cursor's API. On failure,
+// returns the last successful model list cached for this auth when available;
+// only falls back to GetCursorFallbackModels() when no cached list exists.
+// This prevents a transient network blip from permanently shrinking the model
+// registry to stale hardcoded names.
+//
+// A nil auth is tolerated by returning the hardcoded fallback; this avoids a
+// panic in registry reconcile paths where auth may legitimately be nil.
 func FetchCursorModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
+	if auth == nil {
+		return GetCursorFallbackModels()
+	}
+	authID := auth.ID
+
 	accessToken := cursorAccessToken(auth)
 	if accessToken == "" {
-		return GetCursorFallbackModels()
+		return cursorModelsOrFallback(authID)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -1497,7 +1564,7 @@ func FetchCursorModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 		cursorAPIURL+cursorModelsPath, bytes.NewReader(emptyReq))
 	if err != nil {
 		log.Debugf("cursor: failed to create models request: %v", err)
-		return GetCursorFallbackModels()
+		return cursorModelsOrFallback(authID)
 	}
 
 	h2Req.Header.Set("Content-Type", "application/proto")
@@ -1511,24 +1578,26 @@ func FetchCursorModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 	resp, err := client.Do(h2Req)
 	if err != nil {
 		log.Debugf("cursor: models request failed: %v", err)
-		return GetCursorFallbackModels()
+		return cursorModelsOrFallback(authID)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		log.Debugf("cursor: models request returned status %d", resp.StatusCode)
-		return GetCursorFallbackModels()
+		return cursorModelsOrFallback(authID)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return GetCursorFallbackModels()
+		return cursorModelsOrFallback(authID)
 	}
 
 	models := parseModelsResponse(body)
 	if len(models) == 0 {
-		return GetCursorFallbackModels()
+		return cursorModelsOrFallback(authID)
 	}
+
+	cacheCursorModels(authID, models)
 	return models
 }
 
@@ -1655,15 +1724,23 @@ func parseModelEntry(data []byte) *registry.ModelInfo {
 	return info
 }
 
-// GetCursorFallbackModels returns hardcoded fallback models.
+// GetCursorFallbackModels returns hardcoded fallback models used when no
+// cached live-fetch result is available. Kept current with Cursor's actual
+// catalog so a transient GetUsableModels failure does not remove models the
+// user can still call (notably composer-2.5). Update when Cursor retires or
+// renames any of these ids; verified live against api2.cursor.sh on 2026-06-27.
 func GetCursorFallbackModels() []*registry.ModelInfo {
 	return []*registry.ModelInfo{
-		{ID: "composer-2", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Composer 2", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &registry.ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "claude-4-sonnet", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Claude 4 Sonnet", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &registry.ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "claude-3.5-sonnet", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Claude 3.5 Sonnet", ContextLength: 200000, MaxCompletionTokens: 8192},
-		{ID: "gpt-4o", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "GPT-4o", ContextLength: 128000, MaxCompletionTokens: 16384},
-		{ID: "cursor-small", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Cursor Small", ContextLength: 200000, MaxCompletionTokens: 64000},
-		{ID: "gemini-2.5-pro", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Gemini 2.5 Pro", ContextLength: 1000000, MaxCompletionTokens: 65536, Thinking: &registry.ThinkingSupport{Max: 50000, DynamicAllowed: true}},
+		{ID: "composer-2.5", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Composer 2.5", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &registry.ThinkingSupport{Max: 50000, DynamicAllowed: true}},
+		{ID: "composer-2.5-fast", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Composer 2.5 Fast", ContextLength: 200000, MaxCompletionTokens: 64000},
+		{ID: "gpt-5.3-codex", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Codex 5.3", ContextLength: 256000, MaxCompletionTokens: 32768},
+		{ID: "gpt-5.2", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "GPT-5.2", ContextLength: 256000, MaxCompletionTokens: 32768},
+		{ID: "gpt-5.5-high", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "GPT-5.5 High", ContextLength: 256000, MaxCompletionTokens: 32768},
+		{ID: "gpt-5.4-high", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "GPT-5.4 High", ContextLength: 256000, MaxCompletionTokens: 32768},
+		{ID: "claude-opus-4-8-thinking-high", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Claude Opus 4.8 Thinking High", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &registry.ThinkingSupport{Max: 50000, DynamicAllowed: true}},
+		{ID: "claude-opus-4-7-thinking-high", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Claude Opus 4.7 Thinking High", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &registry.ThinkingSupport{Max: 50000, DynamicAllowed: true}},
+		{ID: "claude-4.5-sonnet", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Claude 4.5 Sonnet", ContextLength: 200000, MaxCompletionTokens: 8192},
+		{ID: "gemini-3.1-pro", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Gemini 3.1 Pro", ContextLength: 1000000, MaxCompletionTokens: 65536, Thinking: &registry.ThinkingSupport{Max: 50000, DynamicAllowed: true}},
 	}
 }
 
